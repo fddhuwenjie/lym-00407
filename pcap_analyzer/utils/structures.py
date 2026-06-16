@@ -163,6 +163,61 @@ class ProtocolStats:
 
 
 @dataclass
+class DNSQuestion:
+    qname: str
+    qtype: int
+    qclass: int
+
+
+@dataclass
+class DNSResourceRecord:
+    name: str
+    rtype: int
+    rclass: int
+    ttl: int
+    rdlength: int
+    rdata: str
+    rdata_raw: bytes
+
+
+@dataclass
+class DNSPacket:
+    transaction_id: int
+    flags: int
+    qr: bool
+    opcode: int
+    aa: bool
+    tc: bool
+    rd: bool
+    ra: bool
+    z: int
+    rcode: int
+    qdcount: int
+    ancount: int
+    nscount: int
+    arcount: int
+    questions: List[DNSQuestion]
+    answers: List[DNSResourceRecord]
+    authority: List[DNSResourceRecord]
+    additional: List[DNSResourceRecord]
+
+
+@dataclass
+class DNSStats:
+    total_queries: int = 0
+    total_responses: int = 0
+    query_types: Dict[int, int] = field(default_factory=dict)
+    response_codes: Dict[int, int] = field(default_factory=dict)
+    top_domains: List[Tuple[str, int]] = field(default_factory=list)
+    rtt_samples: List[float] = field(default_factory=list)
+    rtt_min: float = 0.0
+    rtt_max: float = 0.0
+    rtt_avg: float = 0.0
+    unanswered_queries: int = 0
+    dns_packets: List[dict] = field(default_factory=list)
+
+
+@dataclass
 class AnalysisResult:
     protocol_stats: ProtocolStats
     timeline: List[Tuple[float, str, int]]
@@ -170,3 +225,4 @@ class AnalysisResult:
     top_ports: List[Tuple[int, int]]
     tcp_streams: Dict[Quadruple, TCPStream]
     http_messages: List[HTTPMessage]
+    dns_stats: Optional[DNSStats] = None

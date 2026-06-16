@@ -15,6 +15,10 @@ from .structures import (
     ProtocolStats,
     AnalysisResult,
     Quadruple,
+    DNSQuestion,
+    DNSResourceRecord,
+    DNSPacket,
+    DNSStats,
 )
 
 __all__ = [
@@ -33,4 +37,8 @@ __all__ = [
     "ProtocolStats",
     "AnalysisResult",
     "Quadruple",
+    "DNSQuestion",
+    "DNSResourceRecord",
+    "DNSPacket",
+    "DNSStats",
 ]

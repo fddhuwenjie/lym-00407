@@ -1,8 +1,9 @@
 import json
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
-from ..utils import AnalysisResult, ProtocolStats, Quadruple, TCPStream, HTTPMessage
+from ..utils import AnalysisResult, ProtocolStats, Quadruple, TCPStream, HTTPMessage, DNSStats
+from ..extractors import dns_type_to_str, dns_rcode_to_str
 
 
 def _format_timestamp(ts: float) -> str:
@@ -76,8 +77,53 @@ def to_json(result: AnalysisResult, indent: int = 2) -> str:
             }
             for msg in result.http_messages
         ],
+        "dns_stats": _dns_stats_to_dict(result.dns_stats),
     }
     return json.dumps(data, indent=indent, ensure_ascii=False)
+
+
+def _dns_stats_to_dict(dns_stats: Optional[DNSStats]) -> Optional[dict]:
+    if dns_stats is None:
+        return None
+
+    query_types_list = []
+    for qtype, count in sorted(dns_stats.query_types.items(), key=lambda x: -x[1]):
+        query_types_list.append({
+            "type": qtype,
+            "type_str": dns_type_to_str(qtype),
+            "count": count,
+        })
+
+    response_codes_list = []
+    for rcode, count in sorted(dns_stats.response_codes.items(), key=lambda x: -x[1]):
+        response_codes_list.append({
+            "code": rcode,
+            "code_str": dns_rcode_to_str(rcode),
+            "count": count,
+        })
+
+    top_domains_list = []
+    for domain, count in dns_stats.top_domains:
+        top_domains_list.append({
+            "domain": domain,
+            "count": count,
+        })
+
+    return {
+        "total_queries": dns_stats.total_queries,
+        "total_responses": dns_stats.total_responses,
+        "query_types": query_types_list,
+        "response_codes": response_codes_list,
+        "top_domains": top_domains_list,
+        "rtt": {
+            "min_ms": dns_stats.rtt_min * 1000,
+            "max_ms": dns_stats.rtt_max * 1000,
+            "avg_ms": dns_stats.rtt_avg * 1000,
+            "samples": len(dns_stats.rtt_samples),
+        },
+        "unanswered_queries": dns_stats.unanswered_queries,
+        "dns_packets": dns_stats.dns_packets,
+    }
 
 
 def _make_table(headers: List[str], rows: List[List[str]]) -> str:
@@ -224,6 +270,91 @@ def print_http_messages(messages: List[HTTPMessage]) -> str:
     return output + _make_table(headers, rows)
 
 
+def print_dns_stats(dns_stats: Optional[DNSStats]) -> str:
+    if dns_stats is None or (dns_stats.total_queries == 0 and dns_stats.total_responses == 0):
+        return "\n=== DNS Statistics ===\n(No DNS traffic)"
+
+    output = f"\n=== DNS Statistics ===\n"
+    output += f"Total Queries:  {dns_stats.total_queries:,}\n"
+    output += f"Total Responses: {dns_stats.total_responses:,}\n"
+    output += f"Unanswered Queries: {dns_stats.unanswered_queries:,}\n"
+    output += "\n"
+
+    if dns_stats.top_domains:
+        headers = ["Rank", "Domain", "Query Count", "Percentage"]
+        total = sum(c for _, c in dns_stats.top_domains) if dns_stats.top_domains else 1
+        rows = []
+        for i, (domain, count) in enumerate(dns_stats.top_domains, 1):
+            rows.append([str(i), domain, f"{count:,}", f"{count/total*100:.1f}%"])
+        output += "--- Top 10 Queried Domains ---\n"
+        output += _make_table(headers, rows)
+        output += "\n\n"
+
+    if dns_stats.query_types:
+        headers = ["Query Type", "Count", "Percentage"]
+        total = sum(dns_stats.query_types.values()) if dns_stats.query_types else 1
+        rows = []
+        for qtype, count in sorted(dns_stats.query_types.items(), key=lambda x: -x[1]):
+            rows.append([dns_type_to_str(qtype), f"{count:,}", f"{count/total*100:.1f}%"])
+        output += "--- Query Type Distribution ---\n"
+        output += _make_table(headers, rows)
+        output += "\n\n"
+
+    if dns_stats.response_codes:
+        headers = ["Response Code", "Count", "Percentage"]
+        total = sum(dns_stats.response_codes.values()) if dns_stats.response_codes else 1
+        rows = []
+        for rcode, count in sorted(dns_stats.response_codes.items(), key=lambda x: -x[1]):
+            rows.append([dns_rcode_to_str(rcode), f"{count:,}", f"{count/total*100:.1f}%"])
+        output += "--- Response Code Distribution ---\n"
+        output += _make_table(headers, rows)
+        output += "\n\n"
+
+    if dns_stats.rtt_samples:
+        headers = ["Metric", "Value"]
+        rows = [
+            ["RTT Min", f"{dns_stats.rtt_min * 1000:.3f} ms"],
+            ["RTT Max", f"{dns_stats.rtt_max * 1000:.3f} ms"],
+            ["RTT Avg", f"{dns_stats.rtt_avg * 1000:.3f} ms"],
+            ["Samples", f"{len(dns_stats.rtt_samples):,}"],
+        ]
+        output += "--- Query Response Time (RTT) ---\n"
+        output += _make_table(headers, rows)
+
+    return output
+
+
+def print_dns_packets(dns_stats: Optional[DNSStats], max_items: int = 20) -> str:
+    if dns_stats is None or not dns_stats.dns_packets:
+        return "\n=== DNS Packets ===\n(No DNS packets)"
+
+    headers = ["#", "Time", "Type", "Src", "Dst", "Transaction ID", "QName", "QType", "RCode"]
+
+    display_packets = dns_stats.dns_packets[:max_items]
+    rows = []
+    for i, pkt in enumerate(display_packets, 1):
+        pkt_type = "RESP" if pkt["is_response"] else "QUERY"
+        qname = pkt["questions"][0]["qname"] if pkt["questions"] else "-"
+        qtype = pkt["questions"][0]["qtype_str"] if pkt["questions"] else "-"
+        rcode = pkt["rcode_str"] if pkt["is_response"] else "-"
+        src = f"{pkt['src_ip']}:{pkt['src_port']}"
+        dst = f"{pkt['dst_ip']}:{pkt['dst_port']}"
+        rows.append([
+            str(i),
+            _format_timestamp(pkt["timestamp"]),
+            pkt_type,
+            src,
+            dst,
+            f"0x{pkt['transaction_id']:04x}",
+            qname,
+            qtype,
+            rcode,
+        ])
+
+    output = f"\n=== DNS Packets (first {max_items} of {len(dns_stats.dns_packets)}) ===\n"
+    return output + _make_table(headers, rows)
+
+
 def print_summary(result: AnalysisResult) -> str:
     output_parts = []
 
@@ -233,6 +364,7 @@ def print_summary(result: AnalysisResult) -> str:
     output_parts.append(print_timeline(result.timeline))
     output_parts.append(print_tcp_streams(result.tcp_streams))
     output_parts.append(print_http_messages(result.http_messages))
+    output_parts.append(print_dns_stats(result.dns_stats))
 
     return "\n".join(output_parts)
 

@@ -20,7 +20,7 @@ from .analytics import (
     write_json_file,
     write_text_file,
 )
-from .extractors import HTTPExtractor
+from .extractors import HTTPExtractor, parse_dns
 from .utils import Packet, ReassembledIPPacket, HTTPMessage
 from .utils.constants import (
     IP_PROTO_TCP,
@@ -74,6 +74,32 @@ def _update_packet_from_reassembled(
     return packet
 
 
+def _try_parse_dns(packet: Packet) -> bool:
+    if not packet.udp:
+        return False
+    if packet.udp.src_port != 53 and packet.udp.dst_port != 53:
+        return False
+    dns = parse_dns(packet.udp.payload)
+    if dns is None:
+        return False
+    return True
+
+
+def _process_dns_packet(packet: Packet, analyzer) -> bool:
+    if not packet.udp:
+        return False
+    if packet.udp.src_port != 53 and packet.udp.dst_port != 53:
+        return False
+    try:
+        dns = parse_dns(packet.udp.payload)
+        if dns is None:
+            return False
+        analyzer.process_dns_packet(packet, dns)
+        return True
+    except Exception:
+        return False
+
+
 def analyze_pcap(
     file_path: str,
     verbose: bool = False,
@@ -110,16 +136,19 @@ def analyze_pcap(
                     packet = _process_reassembled_payload(
                         packet, reassembled, tcp_reassembler, analyzer
                     )
+                    _process_dns_packet(packet, analyzer)
                 else:
                     if packet.ipv4.fragment_offset > 0:
                         packet.tcp = None
                         packet.udp = None
                         packet.icmp = None
                     analyzer.process_packet(packet)
+                    _process_dns_packet(packet, analyzer)
             else:
                 if packet.tcp:
                     tcp_reassembler.add_packet(packet)
                 analyzer.process_packet(packet)
+                _process_dns_packet(packet, analyzer)
 
             packet_count += 1
             if verbose and packet_count % progress_interval == 0:
@@ -152,9 +181,12 @@ def analyze_pcap(
             all_http_messages.extend(http_messages)
             analyzer.process_http_messages(http_messages)
 
+    dns_stats = analyzer.get_dns_stats()
+
     result = analyzer.build_result(
         tcp_streams=tcp_reassembler.get_all_streams(),
         http_messages=all_http_messages,
+        dns_stats=dns_stats,
     )
 
     elapsed = time.time() - start_time
